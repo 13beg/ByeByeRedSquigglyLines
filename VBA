@@ -1,0 +1,48 @@
+Sub AutoDetectCurrentSentenceLanguage()
+    Dim currentSentence As Range
+    Dim sentenceText As String
+    Dim http As Object
+    Dim url As String
+    Dim jsonPayload As String
+    Dim response As String
+    Dim langID As Long
+
+    On Error Resume Next
+    Set currentSentence = Selection.Sentences(1)
+    On Error GoTo 0
+
+    If currentSentence Is Nothing Then Exit Sub
+    sentenceText = Trim(currentSentence.Text)
+    If Len(sentenceText) < 2 Then Exit Sub
+
+    ' JSONa uyumlu hâle getirmek için
+    sentenceText = Replace(sentenceText, "\", "\\")
+    sentenceText = Replace(sentenceText, """", "\""")
+    sentenceText = Replace(sentenceText, vbCr, "")
+    sentenceText = Replace(sentenceText, vbLf, "")
+
+    url = "http://127.0.0.1:8000/detect-language"
+    jsonPayload = "{""text"": """ & sentenceText & """}"
+
+    Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+    On Error GoTo HttpError
+    
+    http.Open "POST", url, False
+    http.setRequestHeader "Content-Type", "application/json"
+    http.setTimeouts 500, 500, 1000, 1000 ' Milisaniyeler içinde yanıt alır
+    http.send jsonPayload
+
+    If http.Status = 200 Then
+        response = http.responseText
+        If InStr(response, "lang_id") > 0 Then
+            langID = CLng(Split(Split(response, """lang_id"":")(1), ",")(0))
+            currentSentence.LanguageID = langID
+        End If
+    End If
+    Exit Sub
+
+HttpError:
+    MsgBox "Dil tespit sunucusu kapalı." & vbCrLf & _
+           "Lütfen 'app.py ' adlı server tarafını kontrol edin.", vbExclamation
+End Sub
+
