@@ -1,72 +1,91 @@
 # =====================================================================
-# Word Auto-Language Detector Server
-# Kurulum: pip install fastapi uvicorn langdetect
-# Begüm Göktaş - 14.08.2026
+# Word Multi-Language Dynamic Server (Sözlük Destekli)
+# Kurulum: pip install fastapi uvicorn langdetect pyspellchecker
 # =====================================================================
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 from langdetect import detect_langs, LangDetectException, DetectorFactory
+from spellchecker import SpellChecker
 import uvicorn
+import re
 
-# Tutarlı sonuçlar üretsin diye başta sıfırladım
 DetectorFactory.seed = 0
+app = FastAPI(title="Word Language Server")
 
-app = FastAPI(title="Word Language Detector")
-
-# Microsoft Word OpenXML Dil Numaralandırma Sistemi (LCID Codes)
+# Microsoft Word Dil Kodları (LCID)
 LANG_MAP = {
-    'tr': 1055,  # Turkish
-    'en': 1033,  # English (US)
-    'de': 1031,  # German
-    'fr': 1036,  # French
-    'ru': 1049,  # Russian
+    'tr': 1055,  # Türkçe
+    'en': 1033,  # İngilizce
+    'de': 1031,  # Almanca
+    'fr': 1036,  # Fransızca
+    'ru': 1049,  # Rusça
 }
+DEFAULT_LANG_ID = 1055
 
-DEFAULT_LANG_ID = 1055  # Şüpheye düşüldüğünde varsayılan dil :Türkçe
-MIN_LENGTH = 10         # Çok kısa kelimelerde yanlış dil atamasını engelleme sınırı
-MIN_CONFIDENCE = 0.60   # Güven Eşiği (%60 olasılığın altındakileri varsayılan dil yap)
+# Sözlükleri başlatıyoruz (İlk açılışta hafızaya yüklenir)
+print("Dil sözlükleri yükleniyor, lütfen bekleyin...")
+spell_en = SpellChecker(language='en')
+spell_de = SpellChecker(language='de')
+spell_fr = SpellChecker(language='fr')
+spell_ru = SpellChecker(language='ru')
 
+# Kontrol edilecek yabancı diller sözlük haritası
+FOREIGN_CHECKERS = [
+    (spell_en, 1033),  # İngilizce
+    (spell_de, 1031),  # Almanca
+    (spell_fr, 1036),  # Fransızca
+    (spell_ru, 1049),  # Rusça
+]
 
-class TextRequest(BaseModel):
-    text: str
+class WordListRequest(BaseModel):
+    sentence_text: str
+    words: list[str]
 
+def detect_single_word_lang(word: str, sentence_main_lang: int) -> int:
+    clean = re.sub(r'[^\w\s]', '', word).strip().lower()
 
-@app.post("/detect-language")
-def detect_language(req: TextRequest):
-    text = req.text.strip()
+    # 3 harften kısa kelimeler veya sayılar cümlenin ana dilini korusun
+    if len(clean) < 3 or clean.isdigit():
+        return sentence_main_lang
 
-    # 1. Metin çok kısa ise hemen varsayılan dili döndür
-    if len(text) < MIN_LENGTH:
-        return {"lang_id": DEFAULT_LANG_ID, "confidence": None, "reason": "too_short"}
+    #Sözlük Kontrolü
+    for checker, lcid in FOREIGN_CHECKERS:
+        # Eğer cümlenin ana dili zaten bu dil değilse ve kelime bu sözlükte varsa:
+        if lcid != sentence_main_lang:
+            if clean in checker:
+                return lcid
 
+    # 2. ÖNCELİK: Sözlükte bulunamadıysa cümlenin ana diline sadık kal
+    return sentence_main_lang
+
+@app.post("/analyze-sentence")
+def analyze_sentence(req: WordListRequest):
+    sentence = req.sentence_text.strip()
+    words = req.words
+
+    # 1. Cümlenin GENEL Ana Dilini Tespiti
+    sentence_main_lang = DEFAULT_LANG_ID
     try:
-        # 2. Olasılık tabanlı dil analizi yap
-        candidates = detect_langs(text)
-        best = candidates[0]  # En yüksek olasılıklı dil tahmini
-
-        # 3. Güven seviyesi %60'ın altındaysa riske girme, varsayılana düş
-        if best.prob < MIN_CONFIDENCE:
-            return {
-                "lang_id": DEFAULT_LANG_ID, 
-                "confidence": best.prob, 
-                "reason": "low_confidence"
-            }
-
-        # 4. Tespit edilen dil haritasında var mı bak, yoksa İngilizce (1033) ata
-        lang_id = LANG_MAP.get(best.lang, 1033)
-        return {"lang_id": lang_id, "confidence": best.prob, "reason": "ok"}
-
+        sentence_candidates = detect_langs(sentence)
+        if sentence_candidates and sentence_candidates[0].prob >= 0.50:
+            sentence_main_lang = LANG_MAP.get(sentence_candidates[0].lang, DEFAULT_LANG_ID)
     except LangDetectException:
-        # Kütüphane metni çözemezse varsayılan dile dön
-        return {"lang_id": DEFAULT_LANG_ID, "confidence": None, "reason": "error"}
+        pass
 
+    # 2. Her kelime için dinamik dil tespiti
+    lcids = []
+    for w in words:
+        word_lcid = detect_single_word_lang(w, sentence_main_lang)
+        lcids.append(str(word_lcid))
 
-@app.get("/ping")
-def ping():
-    return {"status": "ok"}
+    print(f"➜ [ANALİZ] Cümle: '{sentence[:30]}...' | Ana Dil: {sentence_main_lang} | İşlenen Kelime: {len(words)}")
 
+    return {"lcids": "|".join(lcids)}
 
 if __name__ == "__main__":
-    # Uvicorn sunucusunu 127.0.0.1:8000 adresinde ayağa kaldırır
+    print("\n" + "="*50)
+    print("DİL TESPİT SUNUCUSU BAŞLATILDI (SÖZLÜK ENTEGRELİ)")
+    print("Word üzerinde ALT + B basarak test edebilirsiniz.") # ALT + B kısayolunu ben belirledim
+    print("="*50 + "\n")
     uvicorn.run(app, host="127.0.0.1", port=8000)
