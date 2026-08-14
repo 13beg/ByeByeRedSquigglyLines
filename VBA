@@ -1,11 +1,19 @@
+' =====================================================================
+' Word Dinamik Çok Dilli Cümle Analiz Makrosu
+' =====================================================================
+
 Sub AutoDetectCurrentSentenceLanguage()
     Dim currentSentence As Range
+    Dim wordRange As Range
     Dim sentenceText As String
+    Dim wordsJson As String
     Dim http As Object
     Dim url As String
     Dim jsonPayload As String
     Dim response As String
-    Dim langID As Long
+    Dim lcidArray() As String
+    Dim i As Long
+    Dim cleanWord As String
 
     On Error Resume Next
     Set currentSentence = Selection.Sentences(1)
@@ -15,34 +23,85 @@ Sub AutoDetectCurrentSentenceLanguage()
     sentenceText = Trim(currentSentence.Text)
     If Len(sentenceText) < 2 Then Exit Sub
 
-    ' JSONa uyumlu hâle getirmek için
+    ' 1. Cümledeki kelimeleri JSON formatına hazırlamaca
+    wordsJson = ""
+    For Each wordRange In currentSentence.Words
+        cleanWord = Trim(wordRange.Text)
+        ' Sadece gerçek kelimeleri al (Noktalama işaretlerini atla ki hata çıkmasın)
+        If IsWord(cleanWord) Then
+            cleanWord = Replace(cleanWord, "\", "\\")
+            cleanWord = Replace(cleanWord, """", "\""")
+            cleanWord = Replace(cleanWord, vbCr, "")
+            cleanWord = Replace(cleanWord, vbLf, "")
+            wordsJson = wordsJson & """" & cleanWord & ""","
+        End If
+    Next wordRange
+
+    If Len(wordsJson) > 0 Then
+        wordsJson = Left(wordsJson, Len(wordsJson) - 1) ' Son virgülü sil
+    End If
+
+    ' JSON Payload hazırlama
     sentenceText = Replace(sentenceText, "\", "\\")
     sentenceText = Replace(sentenceText, """", "\""")
     sentenceText = Replace(sentenceText, vbCr, "")
     sentenceText = Replace(sentenceText, vbLf, "")
 
-    url = "http://127.0.0.1:8000/detect-language"
-    jsonPayload = "{""text"": """ & sentenceText & """}"
+    jsonPayload = "{""sentence_text"": """ & sentenceText & """, ""words"": [" & wordsJson & "]}"
+    url = "http://127.0.0.1:8000/analyze-sentence"
 
+    ' 2. Sunucuya İstek Atmaca
     Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
     On Error GoTo HttpError
-    
+
     http.Open "POST", url, False
     http.setRequestHeader "Content-Type", "application/json"
-    http.setTimeouts 500, 500, 1000, 1000 ' Milisaniyeler içinde yanıt alır
+    http.setTimeouts 500, 500, 1000, 1000
     http.send jsonPayload
 
     If http.Status = 200 Then
         response = http.responseText
-        If InStr(response, "lang_id") > 0 Then
-            langID = CLng(Split(Split(response, """lang_id"":")(1), ",")(0))
-            currentSentence.LanguageID = langID
+        
+        If InStr(response, "lcids") > 0 Then
+            Dim rawLcids As String
+            rawLcids = Split(Split(response, """lcids"":""")(1), """")(0)
+            lcidArray = Split(rawLcids, "|")
+
+            ' 3. Word Kelimelerine Dil Kodlarını Uygula
+            i = 0
+            For Each wordRange In currentSentence.Words
+                If IsWord(Trim(wordRange.Text)) Then
+                    If i <= UBound(lcidArray) Then
+                        wordRange.LanguageID = CLng(lcidArray(i))
+                        i = i + 1
+                    End If
+                End If
+            Next wordRange
         End If
     End If
     Exit Sub
 
 HttpError:
-    MsgBox "Dil tespit sunucusu kapalı." & vbCrLf & _
-           "Lütfen 'app.py ' adlı server tarafını kontrol edin.", vbExclamation
+    MsgBox "Dil sunucusu kapalı! Lütfen terminalden app.py dosyasını başlatın.", vbExclamation
 End Sub
+
+
+' ---------------------------------------------------------------------
+' Yardımcı Fonksiyon: Bir metnin sadece noktalama işareti mi
+' yoksa gerçek bir kelime mi olduğunu kontrol eder (Dil Bağımsız)
+' ---------------------------------------------------------------------
+Private Function IsWord(ByVal str As String) As Boolean
+    str = Trim(str)
+    If Len(str) = 0 Then Exit Function
+    
+    Dim i As Long, ch As String
+    ' Metnin içinde noktalama işareti DIŞINDA en az 1 karakter varsa kelimedir
+    For i = 1 To Len(str)
+        ch = Mid(str, i, 1)
+        If InStr(" .,!?:;""'()-—–[]{}<>/\|@#$%^&*+=`~" & vbCr & vbLf & vbTab, ch) = 0 Then
+            IsWord = True
+            Exit Function
+        End If
+    Next i
+End Function
 
